@@ -186,9 +186,9 @@ for i in range(gps_buf, len_data):
             t4 = 1 / (1 + pow(t3,2))
             t5 = pow(t2,2)
             t6 = t4 / t5
-            H_gps_heading = np.array([t6*(2*x[3]*t2 - 2*x[0]*t1), t6*(2*x[2]*t2 - 2*x[1]*t1), 
+            H_gps_heading = np.array([[t6*(2*x[3]*t2 - 2*x[0]*t1), t6*(2*x[2]*t2 - 2*x[1]*t1), 
                     t6*(2*x[1]*t2 + 2*x[2]*t1), t6*(2*x[0]*t2 + 2*x[3]*t1),
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]])
             r_gps_heading = measure_yaw - predict_yaw
             if r_gps_heading > math.pi:
                 r_gps_heading = r_gps_heading - 2 * math.pi
@@ -196,7 +196,6 @@ for i in range(gps_buf, len_data):
                 r_gps_heading = r_gps_heading + 2 * math.pi
             R_mag = pow(5.0 / vehicle_speed[i] * DEG_TO_RAD_DOUBLE, 2)
             print "R_mag: "
-            print p
             print H_gps_heading
             si_mag = 1.0 / (np.dot(np.dot(H_gps_heading, p), H_gps_heading.transpose()) + R_mag) #pinv need 2 dim
             beta_mag = pow(r_gps_heading,2) * si_mag
@@ -208,12 +207,14 @@ for i in range(gps_buf, len_data):
                 print correction
                 #correction[4:10] = [0,0,0,0,0,0]
                 #correction[13:16] = [0,0,0]
-                x = x + correction
+                #x = x + correction.transpose()
+                for nm in range(len(x)):
+                    x[nm] += correction[nm][0]
                 p = np.dot(np.eye(16)-np.dot(k_mag, H_gps_heading), p)
                 x[0:4] = x[0:4] / np.linalg.norm(x[0:4])
     
     #use gps speed
-    gps_correct = 0
+    gps_correct = 1
     if gps_correct:
         if gps[i,0] != gps[i-1,0]:
         #    print '1'
@@ -242,6 +243,8 @@ for i in range(gps_buf, len_data):
                 #correction[6] = 0
                 #correction[10:13] = [0, 0, 0]
                 x = x + correction
+                #vdd = np.eye(16)-np.dot(k_gps, H_gps)
+                #print vdd.shape
                 p = np.dot(np.eye(16)-np.dot(k_gps, H_gps),p)
                 x[0:4] = x[0:4] / np.linalg.norm(x[0:4])
 lmin = 10
