@@ -3,7 +3,7 @@ import copy
 import numpy as np
 import math
 import matplotlib.pyplot as plt
-from funcs.trans import ppprint, euler2q, q2R, from_axis_angle, q2euler
+from funcs.trans import ppprint, euler2q, q2R, from_axis_angle, q2euler, euler2skewSymmetric
 from funcs.initialize_quat_covariance import initialize_quat_covariance
 '''
 with open('../data/imu20685_3.csv', 'r') as f:
@@ -36,21 +36,12 @@ gps_vel2d = data[:, 34]
 gps_speed = [math.sqrt(pow(gps[i,0],2) + pow(gps[i,1],2) + pow(gps[i,2],2)) for i in range(len(data))]
 vision_pos = data[:, 30:32] #notes x,y,z of pose vision
 '''
-init kf parameters
+init eskf parameters
 '''
-x = np.array(np.zeros(16))
-x[0] = 1.0
-H_zp = np.zeros([2,16])#for zero speed modification zupt
-H_zp[0][7] = 1
-H_zp[1][8] = 1
-H_gps = np.zeros([3,16])#guance matrix
-H_gps[0][4] = 1
-H_gps[1][5] = 1
-H_gps[2][6] = 1
+x_nom = np.array(np.zeros(16)) #[p v q a_b w_b ]    //maybe g
+x_err = np.array(np.zeros(15)) #[delta_p delta_v delta_theta delta_a_b  delta_w_b]  //maybe delta_g
 
-R_baro = 9
-R_zp = np.array([[1, 0],[0, 1]])
-R_speed = pow(0.5,2)
+
 gyrox_bias_noise = pow((5e-3 * DEG_TO_RAD_DOUBLE),2)
 gyroy_bias_noise = pow((5e-3 * DEG_TO_RAD_DOUBLE),2)
 gyroz_bias_noise = pow((5e-3 * DEG_TO_RAD_DOUBLE),2)
@@ -65,12 +56,6 @@ accy_noise = pow((1e-4),2)
 accz_noise = pow((1e-0),2)
 
 #flags
-gps_correct = 1
-gps_heading_correct = 1
-vehicle_speed_correct = 0
-land_correct = 0
-zp_correct = 0
-gps_init = 0
 filter_init = 0
 predictState = 1
 
@@ -79,7 +64,6 @@ len_data = len(data)
 fusion_pose = copy.deepcopy(gps[:, 3:6])
 fusion_speed = copy.deepcopy(data[:, 0:3])
 fusion_heading = copy.deepcopy(vision_heading)
-#ppprint(gps)
 #len_data = 6000
 for i in range(gps_buf, len_data):
     #print math.sqrt(pow(acc[i][0],2) + pow(acc[i][1],2) + pow(acc[i][2],2))
@@ -87,90 +71,75 @@ for i in range(gps_buf, len_data):
         pitch = math.asin(-np.mean(acc[100:150,0]) / 9.80665)
         roll = math.atan2(np.mean(acc[100:150,1]), np.mean(acc[100:150, 2]))
         yaw = gps_heading[i]
-        x[0:4] = euler2q([roll, pitch, yaw])
+        x_nom[6:10] = euler2q([roll, pitch, yaw])
         rpy = q2euler(x[0:4])
         print "yaw = %f, rpy = %f, %f, %f" %(yaw, rpy[0], rpy[1], rpy[2])
         #print x[0:4]
-        p = np.diag([0, 0, 0, 0, 0.01, 0.01, 0.01, 4, 4, 4, 
+        P = np.diag([0.25, 0.25, 0.25, 0.01, 0.01, 0.01, 0, 0, 0, 
             pow(2.0*DEG_TO_RAD_DOUBLE,2), pow(2.0*DEG_TO_RAD_DOUBLE,2), pow(2.0*DEG_TO_RAD_DOUBLE,2), 
             pow(3.0e-3,2), pow(3.0e-3,2), pow(3.0e-3,2)])
-        rotation_vector_variance = [pow(3.0 * DEG_TO_RAD_DOUBLE, 2), pow(3.0 * DEG_TO_RAD_DOUBLE, 2), pow(3.0 * DEG_TO_RAD_DOUBLE, 2)]
-        p[0:4,0:4] = np.diag([1e-4, 1e-4, 1e-4, 1e-4])
-        #p[0:4,0:4] = initialize_quat_covariance(x[0:4], rotation_vector_variance)
+        P[6:9,6:9] = np.diag([1e-4, 1e-4, 1e-4]) #P for err_state, use euler not quaternion.
         filter_init = 1
-        x[4:7] = v[i]
-        x[7:10] = gps[i,3:6]
+        x_nom[3:6] = v[i]
+        x_nom[0:3] = gps[i,3:6]
     #end fi filter_init
     dt = (timestamp[i] - timestamp[i-1]) / 1e6
 
     if predictState == 1:
-        delAng = (gyro[i,:].transpose() - x[10:13]) * dt
-        delVel = (acc[i,:].transpose() - x[13:16]) * dt
-        Cbn = q2R(x[0:4])
+        #predict nominate state
+        delVel = (acc[i,:].transpose() - x_nom[10:13]) * dt
+        delAng = (gyro[i,:].transpose() - x_nom[13:16]) * dt
+        Cbn = q2R(x_nom[6:10])
         delVel = np.dot(Cbn, delVel) - np.array([0, 0, 9.80665*dt])
         dq = from_axis_angle(delAng)
-        x[0:4] = [x[0] * dq[0] - x[1] * dq[1] - x[2] * dq[2] - x[3] * dq[3],
-                x[0] * dq[1] + x[1] * dq[0] + x[2] * dq[3] - x[3] * dq[2],
-                x[0] * dq[2] - x[1] * dq[3] + x[2] * dq[0] + x[3] * dq[1],
-                x[0] * dq[3] + x[1] * dq[2] - x[2] * dq[1] + x[3] * dq[0]]
-        x[0:4] = x[0:4] / np.linalg.norm(x[0:4])
+        x_nom[6:10] = [x_nom[6] * dq[0] - x_nom[7] * dq[1] - x_nom[8] * dq[2] - x_nom[9] * dq[3],
+                x_nom[6] * dq[1] + x_nom[7] * dq[0] + x_nom[8] * dq[3] - x_nom[9] * dq[2],
+                x_nom[6] * dq[2] - x_nom[7] * dq[3] + x_nom[8] * dq[0] + x_nom[9] * dq[1],
+                x_nom[6] * dq[3] + x_nom[7] * dq[2] - x_nom[8] * dq[1] + x_nom[9] * dq[0]]
+        x_nom[6:10] = x_nom[6:10] / np.linalg.norm(x_nom[6:10])
 
-        Vel_pre = x[4:7]
-        x[4:7] = x[4:7] + delVel
-        x[7:10] = x[7:10] + (x[4:7] + Vel_pre) * dt/2
-    #end predict, then need to update P and Q
-    FF = [[1, -(gyro[i,0]-x[10])*dt/2, -(gyro[i,1]-x[11])*dt/2, -(gyro[i,2]-x[12])*dt/2, 0, 0, 0, 0, 0, 0, 0.5*x[1]*dt, 0.5*x[2]*dt, 0.5*x[3]*dt, 0, 0, 0],
-         [(gyro[i,0]-x[10])*dt/2, 1, (gyro[i,2]-x[12])*dt/2, -(gyro[i,1]-x[11])*dt/2, 0, 0, 0, 0, 0, 0, -0.5*x[0]*dt, 0.5*x[3]*dt, -0.5*x[2]*dt, 0, 0, 0],
-         [(gyro[i,1]-x[11])*dt/2, -(gyro[i,2]-x[12])*dt/2, 1, (gyro[i,0]-x[10])*dt/2, 0, 0, 0, 0, 0, 0, -0.5*x[3]*dt, -0.5*x[0]*dt, 0.5*x[1]*dt, 0, 0, 0],
-         [(gyro[i,2]-x[12])*dt/2, (gyro[i,1]-x[11])*dt/2, -(gyro[i,0]-x[10])*dt/2, 1, 0, 0, 0, 0, 0, 0, 0.5*x[2]*dt, -0.5*x[1]*dt, -0.5*x[0]*dt, 0, 0, 0],
+        Vel_pre = x_nom[3:6]
+        x_nom[3:6] = x_nom[3:6] + delVel
+        x_nom[0:3] = x_nom[0:3] + (x_nom[3:6] + Vel_pre) * dt/2
+        #predict error state
+        x_err[9:12] = x_err[9:12]
+        x_err[12:15] = x_err[12:15]
+        R = q2R(dq)
+        x_err[6:9] = np.dot(R.transpose(), x_err[6:9]) - x_err[12:15] * dt
+        tmp_Rx = np.dot(Cbn, euler2skewSymmetric(gyro[i,:].transpose() - x_nom[13:16]))
+        x_err[3:6] = x_err[3:6] + (- np.dot(tmp_Rx, x_err[6:9]) - np.dot(Cbn, x_err[9:12])) * dt
+        x_err[0:3] = x_err[0:3] + x[3:6] * dt
+        #end predict, then need to update P and Q
+        FF = np.zeros((15,15))
+        FF[0:3,0:3] = np.eye(3)
+        FF[0:3,3:6] = np.eye(3) * dt
+        FF[3:6,3:6] = np.eye(3)
+        FF[3:6,6:9] = - tmp_Rx * dt
+        FF[3:6,9:12] = - Cbn * dt
+        FF[6:9,6:9] = R
+        FF[6:9,12:15] = - np.eye(3) * dt
+        FF[9:12,9:12] = np.eye(3)
+        FF[12:15,12:15] = np.eye(3)
 
-         [(2*x[0]*(acc[i,0]-x[13])-2*x[3]*(acc[i,1]-x[14])+2*x[2]*(acc[i,2]-x[15]))*dt, (2*x[1]*(acc[i,0]-x[13])+2*x[2]*(acc[i,1]-x[14])+2*x[3]*(acc[i,2]-x[15]))*dt, (-2*x[2]*(acc[i,0]-x[13])+2*x[1]*(acc[i,1]-x[14])+2*x[0]*(acc[i,2]-x[15]))*dt, (-2*x[3]*(acc[i,0]-x[13])-2*x[0]*(acc[i,1]-x[14])+2*x[1]*(acc[i,2]-x[15]))*dt, 1, 0, 0, 0, 0, 0, 0, 0, 0,
-         -(pow(x[0],2)+pow(x[1],2)-pow(x[2],2)-pow(x[3],2))*dt, -2*(x[1]*x[2]-x[0]*x[3])*dt, -2*(x[1]*x[3]+x[0]*x[2])*dt],
 
-         [(2*x[3]*(acc[i,0]-x[13])+2*x[0]*(acc[i,1]-x[14])-2*x[1]*(acc[i,2]-x[15]))*dt, (2*x[2]*(acc[i,0]-x[13])-2*x[1]*(acc[i,1]-x[14])-2*x[0]*(acc[i,2]-x[15]))*dt, (2*x[1]*(acc[i,0]-x[13])+2*x[2]*(acc[i,1]-x[14])+2*x[3]*(acc[i,2]-x[15]))*dt, (2*x[0]*(acc[i,0]-x[13])-2*x[3]*(acc[i,1]-x[14])+2*x[2]*(acc[i,2]-x[15]))*dt, 0, 1, 0, 0, 0, 0, 0, 0, 0,
-         -2*(x[1]*x[2]+x[0]*x[3])*dt, -(pow(x[0],2)-pow(x[1],2)+pow(x[2],2)-pow(x[3],2))*dt, -2*(x[3]*x[2]-x[0]*x[1])*dt],
-
-         [(-2*x[2]*(acc[i,0]-x[13])+2*x[1]*(acc[i,1]-x[14])+2*x[0]*(acc[i,2]-x[15]))*dt, (2*x[3]*(acc[i,0]-x[13])+2*x[0]*(acc[i,1]-x[14])-2*x[1]*(acc[i,2]-x[15]))*dt, (-2*x[0]*(acc[i,0]-x[13])+2*x[3]*(acc[i,1]-x[14])-2*x[2]*(acc[i,2]-x[15]))*dt, (2*x[1]*(acc[i,0]-x[13])+2*x[2]*(acc[i,1]-x[14])+2*x[3]*(acc[i,2]-x[15]))*dt, 0, 0, 1, 0, 0, 0, 0, 0, 0,
-         -2*(x[1]*x[3]-x[0]*x[2])*dt, -2*(x[3]*x[2]+x[0]*x[1])*dt, -(pow(x[0],2)-pow(x[1],2)-pow(x[2],2)+pow(x[3],2))*dt],
-
-         [0, 0, 0, 0, dt, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0],
-         [0, 0, 0, 0, 0, dt, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
-         [0, 0, 0, 0, 0, 0, dt, 0, 0, 1, 0, 0, 0, 0, 0, 0],
-         [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0],
-         [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0],
-         [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0],
-         [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0],
-         [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0],
-         [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]]
-
-    F= np.array(FF)
-    #print F.shape
-    Q = np.diag([gyrox_noise, gyroy_noise, gyroz_noise,accx_noise, accy_noise, accz_noise,gyrox_bias_noise, gyroy_bias_noise, gyroz_bias_noise,accx_bias_noise, accy_bias_noise, accz_bias_noise])
-    G =[[(dt *x[1]) / 2, (dt *x[2]) / 2, (dt *x[3]) / 2, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [-(dt *x[0]) / 2, (dt *x[3]) / 2,  -(dt *x[2]) / 2, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [-(dt *x[3]) / 2,  -(dt *x[0]) / 2, (dt *x[1]) / 2, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [(dt *x[2]) / 2,  -(dt *x[1]) / 2,  -(dt *x[0]) / 2, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, -(pow(x[0],2)+pow(x[1],2)-pow(x[2],2)-pow(x[3],2))*dt,-2*(x[1]*x[2]-x[0]*x[3])*dt,-2*(x[1]*x[3]+x[0]*x[2])*dt, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, -2*(x[1]*x[2]+x[0]*x[3])*dt,-(pow(x[0],2)-pow(x[1],2)+pow(x[2],2)-pow(x[3],2))*dt,-2*(x[3]*x[2]-x[0]*x[1])*dt, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, -2*(x[1]*x[3]-x[0]*x[2])*dt,-2*(x[3]*x[2]+x[0]*x[1])*dt,-(pow(x[0],2)-pow(x[1],2)-pow(x[2],2)+pow(x[3],2))*dt, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, dt, 0, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, dt, 0, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, dt, 0, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, dt, 0, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, dt, 0],
-        [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, dt]]
-    G = np.array(G)
-    Q = np.dot(np.dot(G, Q), G.transpose())
-    p = np.dot(np.dot(F, p), F.transpose()) + Q
+        F= np.array(FF)
+        #print F.shape
+        Q = np.diag([gyrox_noise, gyroy_noise, gyroz_noise,accx_noise, accy_noise, accz_noise,gyrox_bias_noise, gyroy_bias_noise, gyroz_bias_noise,accx_bias_noise, accy_bias_noise, accz_bias_noise])
+        Fi = np.zeros((15,12))
+        Fi[0:3,3:6] = np.eye(3) * dt
+        Fi[3:15,0:12] = np.eye(12)
+        Fi = np.array(Fi)
+        Q = np.dot(np.dot(Fi, Q), Fi.transpose())
+        P = np.dot(np.dot(F, P), F.transpose()) + Q
 
     #fusion_pose.append(x[0:10])
-    fusion_pose[i,:]= x[7:10]
-    fusion_speed[i,:] = x[4:7]
-    rpy = q2euler(x[0:4])
+    fusion_pose[i,:]= x_nom[0:3]
+    fusion_speed[i,:] = x_nom[3:6]
+    rpy = q2euler(x_nom[6:10])
     fusion_heading[i] = rpy[2]
+
+#2019-11-24 20:09
+
 
     gps_heading_correct = 1
     if gps_heading_correct:
