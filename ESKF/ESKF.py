@@ -139,7 +139,27 @@ for i in range(gps_buf, len_data):
     fusion_heading[i] = rpy[2]
 
 #2019-11-24 20:09
+    #use gps data: speed_n speed_e speed_d x y yaw
+    H_x = np.zeros((15,16))
+    H_x[0,0] = 1
+    H_x[1,1] = 1
+    H_x[3,3] = 1
+    H_x[4,4] = 1
+    H_x[5,5] = 1
 
+    euler = q2euler(x_nom[6:10])
+    t1 = 2*(x_nom[6]*x_nom[9] + x_nom[7]*x_nom[8])
+    t2 = pow(x_nom[6],2) + pow(x_nom[7],2) - pow(x_nom[8],2) - pow(x_nom[9],2)
+    t3 = t1 / t2
+    t4 = 1 / (1 + pow(t3,2))
+    t5 = pow(t2,2)
+    t6 = t4 / t5
+    H_x[8,6:10] = [t6*(2*x_nom[9]*t2 - 2*x_nom[6]*t1), t6*(2*x_nom[8]*t2 - 2*x_nom[7]*t1), 
+                    t6*(2*x_nom[7]*t2 + 2*x_nom[8]*t1), t6*(2*x_nom[6]*t2 + 2*x_nom[9]*t1)]
+
+    X_dx = np.zeros((16,15))
+    X_dx[0:6,0:6] = np.eye(6)
+    X_dx[10:16,10:16] = np.eye(6)
 
     gps_heading_correct = 1
     if gps_heading_correct:
