@@ -1,4 +1,4 @@
 1/ compare with EKF, the matrix F is much easier to calculate.  why?  ignore the second order derivative.
 2/ How to formulate matrix Q ?
 3/ Is the init of P ok?
-
+4/ K multplys what ? is that proper ?

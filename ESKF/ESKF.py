@@ -3,7 +3,7 @@ import copy
 import numpy as np
 import math
 import matplotlib.pyplot as plt
-from funcs.trans import ppprint, euler2q, q2R, from_axis_angle, q2euler, euler2skewSymmetric
+from funcs.trans import ppprint, euler2q, q2R, from_axis_angle, q2euler, euler2skewSymmetric, qUpdateDq
 from funcs.initialize_quat_covariance import initialize_quat_covariance
 '''
 with open('../data/imu20685_3.csv', 'r') as f:
@@ -72,7 +72,7 @@ for i in range(gps_buf, len_data):
         roll = math.atan2(np.mean(acc[100:150,1]), np.mean(acc[100:150, 2]))
         yaw = gps_heading[i]
         x_nom[6:10] = euler2q([roll, pitch, yaw])
-        rpy = q2euler(x[0:4])
+        rpy = q2euler(x_nom[0:4])
         print "yaw = %f, rpy = %f, %f, %f" %(yaw, rpy[0], rpy[1], rpy[2])
         #print x[0:4]
         P = np.diag([0.25, 0.25, 0.25, 0.01, 0.01, 0.01, 0, 0, 0, 
@@ -108,7 +108,7 @@ for i in range(gps_buf, len_data):
         x_err[6:9] = np.dot(R.transpose(), x_err[6:9]) - x_err[12:15] * dt
         tmp_Rx = np.dot(Cbn, euler2skewSymmetric(gyro[i,:].transpose() - x_nom[13:16]))
         x_err[3:6] = x_err[3:6] + (- np.dot(tmp_Rx, x_err[6:9]) - np.dot(Cbn, x_err[9:12])) * dt
-        x_err[0:3] = x_err[0:3] + x[3:6] * dt
+        x_err[0:3] = x_err[0:3] + x_err[3:6] * dt
         #end predict, then need to update P and Q
         FF = np.zeros((15,15))
         FF[0:3,0:3] = np.eye(3)
@@ -140,6 +140,7 @@ for i in range(gps_buf, len_data):
 
 #2019-11-24 20:09
     #use gps data: speed_n speed_e speed_d x y yaw
+    #calc H
     H_x = np.zeros((15,16))
     H_x[0,0] = 1
     H_x[1,1] = 1
@@ -161,100 +162,62 @@ for i in range(gps_buf, len_data):
     X_dx[0:6,0:6] = np.eye(6)
     X_dx[10:16,9:15] = np.eye(6)
     qw,qx,qy,qz = x_nom[6:10]
-    X_dx[6:10,6:9] = 0.5 * [[-qx, -qy, -qz], 
-                            [ qw, -qz,  qy], 
-                            [ qz,  qw, -qx], 
-                            [-qy,  qx,  qw]]
-
-    #calc H
+    
+    mm = [[-qx, -qy, -qz], 
+          [ qw, -qz,  qy], 
+          [ qz,  qw, -qx], 
+          [-qy,  qx,  qw]]
+    X_dx[6:10,6:9] = 0.5 * np.array(mm) 
     H = np.dot(H_x, X_dx)
+    
+    # calc K, update P, and calc delta_x
     V = np.eye(15) * 1e-9
     nom = np.dot(P,H.transpose())
     denom = np.dot(np.dot(H,P), H.transpose()) + V
     K = np.dot(nom, np.linalg.pinv(denom))
-    x_err
-
-    gps_heading_correct = 1
-    if gps_heading_correct:
-        if gps_heading[i] != gps_heading[i-1]:
-            euler = q2euler(x[0:4])
-            predict_yaw = euler[2]
-            measure_yaw = gps_heading[i]
-            #below look as yaw in q2culer, make partial-diff to quarternion, 
-            #can be seen as,while yaw got correction, what correction should on quarternion.
-            t1 = 2*(x[0]*x[3] + x[1]*x[2])
-            t2 = pow(x[0],2) + pow(x[1],2) - pow(x[2],2) - pow(x[3],2)
-            t3 = t1 / t2
-            t4 = 1 / (1 + pow(t3,2))
-            t5 = pow(t2,2)
-            t6 = t4 / t5
-            H_gps_heading = np.array([[t6*(2*x[3]*t2 - 2*x[0]*t1), t6*(2*x[2]*t2 - 2*x[1]*t1), 
-                    t6*(2*x[1]*t2 + 2*x[2]*t1), t6*(2*x[0]*t2 + 2*x[3]*t1),
-                    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]])
-            r_gps_heading = measure_yaw - predict_yaw
-            if r_gps_heading > math.pi:
-                r_gps_heading = r_gps_heading - 2 * math.pi
-            elif r_gps_heading < - math.pi:
-                r_gps_heading = r_gps_heading + 2 * math.pi
-            R_mag = pow(5.0 / vehicle_speed[i] * DEG_TO_RAD_DOUBLE, 2)
-            print "R_mag: "
-            print H_gps_heading
-            si_mag = 1.0 / (np.dot(np.dot(H_gps_heading, p), H_gps_heading.transpose()) + R_mag) #pinv need 2 dim
-            beta_mag = pow(r_gps_heading,2) * si_mag
-            print "r_gps_heading = %f, si+mag = %f" %(r_gps_heading, si_mag)
-            if 1:
-            #if beta_mag < 20000000:
-                k_mag = np.dot(np.dot(p, H_gps_heading.transpose()), si_mag)
-                correction = k_mag * r_gps_heading
-                print correction
-                #correction[4:10] = [0,0,0,0,0,0]
-                #correction[13:16] = [0,0,0]
-                #x = x + correction.transpose()
-                for nm in range(len(x)):
-                    x[nm] += correction[nm][0]
-                p = np.dot(np.eye(16)-np.dot(k_mag, H_gps_heading), p)
-                x[0:4] = x[0:4] / np.linalg.norm(x[0:4])
+    y = [gps[i,3], gps[i,4], 0, gps[i,0], gps[i,1], gps[i,2], 0, 0, gps_heading[i], 0,0,0,0,0,0]
+    rpy0 = q2euler(x_nom[6:10])
+    h_xv = [x_nom[0], x_nom[1], 0, x_nom[3], x_nom[4], x_nom[5], 0, 0, rpy0[2], 0,0,0,0,0,0]
+    a = np.array(y) - np.array(h_xv)
+    print y
+    print h_xv
+    print "minus residual:"
+    print a
+    print K
+    delta_x = np.dot(K, np.array(y) - np.array(h_xv))
     
-    #use gps speed
     gps_correct = 1
     if gps_correct:
-        if gps[i,0] != gps[i-1,0]:
-        #    print '1'
-        #else:
-            #euler = q2euler(x[0:4])
-            R_gps = np.diag([pow(gps_s_var[i],2), pow(gps_s_var[i],2), pow(gps_s_var[i],2)])
-            z_gps = gps[i, 0:3]
-            x_predict = x
-            r_gps = z_gps - np.dot(H_gps, x_predict)
-            #print r_gps
-            #print p
-            #print (np.dot(np.dot(H_gps, p), H_gps.transpose()) + R_gps)
-            si_gps = np.linalg.pinv(np.dot(np.dot(H_gps, p), H_gps.transpose()) + R_gps)
-            #print z_gps
-            #print np.dot(H_gps, x_predict)
-            #print r_gps
-            beta_gps = np.dot(np.dot(r_gps.transpose(), si_gps), r_gps)
-            #if beta_gps < 20000000:
-            if 1:
-                k_gps = np.dot(np.dot(p, H_gps.transpose()), si_gps)
-                correction = np.dot(k_gps, r_gps)
-                #print correction
-                #[wrong] p is not diagnoal matrix, so update should not use first kind which regard p as diagnoal, 
-                #should use second in book-QinYongYuan
-                #correction[0:4] = [0, 0, 0, 0]
-                #correction[6] = 0
-                #correction[10:13] = [0, 0, 0]
-                x = x + correction
-                #vdd = np.eye(16)-np.dot(k_gps, H_gps)
-                #print vdd.shape
-                p = np.dot(np.eye(16)-np.dot(k_gps, H_gps),p)
-                x[0:4] = x[0:4] / np.linalg.norm(x[0:4])
+        #do update, injection of observed error into nominal state
+        print delta_x
+        x_nom[0:6] += delta_x[0:6]
+        delta_q = euler2q(delta_x[6:9])
+        #print delta_q
+        drpy1 = q2euler(x_nom[6:10])
+        x_nom[6:10] = qUpdateDq(x_nom[6:10], delta_q)
+        x_nom[6:10] = x_nom[6:10] / np.linalg.norm(x_nom[6:10])
+        drpy2 = q2euler(x_nom[6:10])
+        delta_drpy = np.array(drpy2) - np.array(drpy1)
+        if delta_drpy[2] > 0.1:
+            print "Divergence !"
+        print drpy1
+        print drpy2
+
+        #do ESKF reset
+        '''
+        G = np.eye(15)
+        G[0:6,0:6] = np.eye(6)
+        G[9:15,9:15] = np.eye(6)
+        G[6:9,6:9] = np.eye(3) - euler2skewSymmetric(0.5*delta_x[6:9]) 
+        P = np.dot(np.dot(G,P), G.transpose())
+        '''
+
 lmin = 10
-lmax = 90000
+lmax = 500 #2000
 plt.plot([gps[i,3] for i in range(lmin,lmax)], [gps[i,4] for i in range(lmin,lmax)], '-')
 plt.plot([fusion_pose[i,0] for i in range(lmin,lmax)], [fusion_pose[i,1] for i in range(lmin,lmax)], '-r')
 plt.legend(['gps_position', 'fusion_position'])
-plt.savefig("../pic/position.png")
+plt.savefig("../pic/position_eskf.png")
 plt.close()
 
 plt.plot([i for i in range(lmin,lmax)],[v[i,0] for i in range(lmin,lmax)],'-')
@@ -262,14 +225,14 @@ plt.plot([i for i in range(lmin,lmax)],[fusion_speed[i,0] for i in range(lmin,lm
 plt.plot([i for i in range(lmin,lmax)],[v[i,1] for i in range(lmin,lmax)],'-')
 plt.plot([i for i in range(lmin,lmax)],[fusion_speed[i,1] for i in range(lmin,lmax)],'-r')
 plt.legend(['x_speed_raw', 'x_speed_fuse', 'y_speed_raw', 'y_speed_fuse'])
-plt.savefig("../pic/speed.png")
+plt.savefig("../pic/speed_eskf.png")
 plt.close()
 
 plt.plot([i for i in range(lmin,lmax)],[fusion_heading[i] for i in range(lmin,lmax)],'-r')
 plt.plot([i for i in range(lmin,lmax)],[vision_heading[i] for i in range(lmin,lmax)],'-b')
 plt.plot([i for i in range(lmin,lmax)],[gps_heading[i] for i in range(lmin,lmax)],'-y')
 plt.legend(['fusion_heading', 'vision_heading', 'gps_heading'])
-plt.savefig("../pic/yaw.png")
+plt.savefig("../pic/yaw_eskf.png")
 plt.close()
 #for n in range(10,50):
 #    print "%f   %f" %(gps[n,3],gps[n,4])

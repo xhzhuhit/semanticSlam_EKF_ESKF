@@ -67,3 +67,10 @@ def euler2skewSymmetric(euler):
     R[2,0] = -y
     R[2,1] = x
     return R
+def qUpdateDq(q, dq):
+    qr = [q[0] * dq[0] - q[1] * dq[1] - q[2] * dq[2] - q[3] * dq[3],
+          q[0] * dq[1] + q[1] * dq[0] + q[2] * dq[3] - q[3] * dq[2],
+          q[0] * dq[2] - q[1] * dq[3] + q[2] * dq[0] + q[3] * dq[1],
+          q[0] * dq[3] + q[1] * dq[2] - q[2] * dq[1] + q[3] * dq[0]]
+    return qr
+    
