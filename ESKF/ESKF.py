@@ -159,7 +159,20 @@ for i in range(gps_buf, len_data):
 
     X_dx = np.zeros((16,15))
     X_dx[0:6,0:6] = np.eye(6)
-    X_dx[10:16,10:16] = np.eye(6)
+    X_dx[10:16,9:15] = np.eye(6)
+    qw,qx,qy,qz = x_nom[6:10]
+    X_dx[6:10,6:9] = 0.5 * [[-qx, -qy, -qz], 
+                            [ qw, -qz,  qy], 
+                            [ qz,  qw, -qx], 
+                            [-qy,  qx,  qw]]
+
+    #calc H
+    H = np.dot(H_x, X_dx)
+    V = np.eye(15) * 1e-9
+    nom = np.dot(P,H.transpose())
+    denom = np.dot(np.dot(H,P), H.transpose()) + V
+    K = np.dot(nom, np.linalg.pinv(denom))
+    x_err
 
     gps_heading_correct = 1
     if gps_heading_correct:
