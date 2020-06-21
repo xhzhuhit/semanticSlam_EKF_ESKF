@@ -115,7 +115,7 @@ for i in range(gps_buf, len_data):
                 x[0] * dq[3] + x[1] * dq[2] - x[2] * dq[1] + x[3] * dq[0]]
         x[0:4] = x[0:4] / np.linalg.norm(x[0:4])
 
-        Vel_pre = x[4:7]
+        Vel_pre = x[4:7].copy()
         x[4:7] = x[4:7] + delVel
         x[7:10] = x[7:10] + (x[4:7] + Vel_pre) * dt/2
     #end predict, then need to update P and Q
